@@ -180,19 +180,29 @@ async function appendRow(transaccion) {
   }
 }
 
+// Extrae mes y año de una fecha "DD/MM/YYYY" → "MM/YYYY"
+function monthKey(fecha) {
+  if (!fecha) return null;
+  const parts = fecha.split('/');
+  return parts.length === 3 ? `${parts[1]}/${parts[2]}` : null;
+}
+
+function currentMonthKey() {
+  const now = new Date();
+  return `${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
+}
+
 async function getMonthlySummary() {
   const sheets = await getSheetsClient();
   const spreadsheetId = process.env.SHEET_ID;
-  const monthlySheet = getMonthlySheetName();
-
   await ensureSheet(sheets, spreadsheetId, SHEET_REGISTROS);
-  await ensureSheet(sheets, spreadsheetId, monthlySheet);
 
-  const rows = await readRows(sheets, spreadsheetId, monthlySheet);
+  const rows = await readRows(sheets, spreadsheetId, SHEET_REGISTROS);
+  const key = currentMonthKey();
   let ingresos = 0, gastos = 0;
 
-  for (const [, tipo, , montoStr] of rows) {
-    if (!tipo || !montoStr) continue;
+  for (const [fecha, tipo, , montoStr] of rows) {
+    if (monthKey(fecha) !== key || !tipo || !montoStr) continue;
     const m = parseFloat(montoStr);
     if (isNaN(m)) continue;
     if (tipo === 'Ingreso') ingresos += m;
@@ -287,35 +297,38 @@ async function updateEstadisticas() {
     }
   }
 
-  const monthlyPattern = new RegExp(`^(${MESES.join('|')}) \\d{4}$`);
-  const monthlySheets = allSheets
-    .map(s => s.properties.title)
-    .filter(t => monthlyPattern.test(t))
-    .sort((a, b) => {
-      const [mA, yA] = a.split(' ');
-      const [mB, yB] = b.split(' ');
-      return parseInt(yA) - parseInt(yB) || MESES.indexOf(mA) - MESES.indexOf(mB);
-    });
+  // Todo se lee desde Registros (fuente de verdad) y se agrupa por mes
+  const allRows = await readRows(sheets, spreadsheetId, SHEET_REGISTROS);
 
-  const monthlyData = [];
-  for (const name of monthlySheets) {
-    const rows = await readRows(sheets, spreadsheetId, name);
-    let ing = 0, gas = 0;
-    for (const [, tipo, , montoStr] of rows) {
-      if (!tipo || !montoStr) continue;
-      const m = parseFloat(montoStr);
-      if (isNaN(m)) continue;
-      if (tipo === 'Ingreso') ing += m;
-      else if (tipo === 'Gasto') gas += m;
+  // Agrupar por mes para la tabla histórica
+  const monthMap = new Map(); // "MM/YYYY" → { name, ing, gas }
+  for (const [fecha, tipo, , montoStr] of allRows) {
+    const key = monthKey(fecha);
+    if (!key || !tipo || !montoStr) continue;
+    const m = parseFloat(montoStr);
+    if (isNaN(m)) continue;
+    if (!monthMap.has(key)) {
+      const [mm, yyyy] = key.split('/');
+      const name = `${MESES[parseInt(mm) - 1]} ${yyyy}`;
+      monthMap.set(key, { name, ing: 0, gas: 0 });
     }
-    monthlyData.push([name, ing, gas, ing - gas]);
+    const entry = monthMap.get(key);
+    if (tipo === 'Ingreso') entry.ing += m;
+    else if (tipo === 'Gasto') entry.gas += m;
   }
+  const monthlyData = [...monthMap.entries()]
+    .sort(([a], [b]) => {
+      const [mA, yA] = a.split('/'); const [mB, yB] = b.split('/');
+      return parseInt(yA) - parseInt(yB) || parseInt(mA) - parseInt(mB);
+    })
+    .map(([, { name, ing, gas }]) => [name, ing, gas, ing - gas]);
 
+  // Gastos del mes actual por categoría
   const currentMonth = getMonthlySheetName();
-  const currentRows = await readRows(sheets, spreadsheetId, currentMonth);
+  const curKey = currentMonthKey();
   const catMap = new Map();
-  for (const [, tipo, , montoStr, categoria] of currentRows) {
-    if (tipo !== 'Gasto' || !montoStr || !categoria) continue;
+  for (const [fecha, tipo, , montoStr, categoria] of allRows) {
+    if (monthKey(fecha) !== curKey || tipo !== 'Gasto' || !montoStr || !categoria) continue;
     const m = parseFloat(montoStr);
     if (!isNaN(m)) catMap.set(categoria, (catMap.get(categoria) || 0) + m);
   }
