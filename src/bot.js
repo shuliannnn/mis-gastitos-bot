@@ -7,22 +7,32 @@ const {
   fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
-const qrcode = require('qrcode-terminal');
+const QRCode = require('qrcode');
+const http = require('http');
 const { parseMessage, helpMessage } = require('./parser');
-const { appendRow, getMonthlySummary } = require('./sheets');
+const { appendRow, getMonthlySummary, updateEstadisticas } = require('./sheets');
+const { categorize } = require('./categorizer');
+
 
 const AUTHORIZED_NUMBER = process.env.AUTHORIZED_NUMBER;
 
+// Servidor HTTP para mostrar el QR en el navegador (necesario en Railway)
+let currentQR = null;
+const PORT = process.env.PORT || 3000;
+http.createServer(async (req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  if (currentQR) {
+    const img = await QRCode.toDataURL(currentQR, { width: 300 });
+    res.end(`<!DOCTYPE html><html><body style="margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0f0f0f;color:#fff;font-family:sans-serif"><h2>📱 Escaneá con WhatsApp</h2><img src="${img}" style="border-radius:12px"/><p style="color:#aaa;margin-top:16px">Actualizá la página si el QR venció</p></body></html>`);
+  } else {
+    res.end(`<!DOCTYPE html><html><body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#0f0f0f;color:#4caf50;font-family:sans-serif"><h2>✅ Bot conectado a WhatsApp</h2></body></html>`);
+  }
+}).listen(PORT, () => console.log(`[Bot] Servidor QR en puerto ${PORT}`));
+
 async function handleMessage(sock, message) {
   const jid = message.key.remoteJid;
-  const isFromMe = message.key.fromMe;
 
-  // Solo procesar mensajes del número autorizado (y no los propios enviados por el bot)
-  if (isFromMe) return;
-  if (jid !== AUTHORIZED_NUMBER) {
-    console.log(`[Bot] Mensaje ignorado de número no autorizado: ${jid}`);
-    return;
-  }
+  if (jid !== AUTHORIZED_NUMBER) return;
 
   const text =
     message.message?.conversation ||
@@ -48,14 +58,17 @@ async function handleMessage(sock, message) {
   }
 
   try {
+    transaccion.categoria = await categorize(transaccion.descripcion, transaccion.tipo);
     await appendRow(transaccion);
     const montoFormateado = transaccion.monto.toLocaleString('es-AR');
     const respuesta =
       transaccion.tipo === 'Gasto'
-        ? `✅ Gasto de $${montoFormateado} en ${transaccion.categoria} registrado.`
-        : `✅ Ingreso de $${montoFormateado} en ${transaccion.categoria} registrado.`;
+        ? `✅ *$${montoFormateado}* — ${transaccion.descripcion}\n🏷 Categoría: ${transaccion.categoria}`
+        : `✅ *$${montoFormateado}* — ${transaccion.descripcion}\n🏷 Categoría: ${transaccion.categoria}`;
     await sock.sendMessage(jid, { text: respuesta });
     console.log(`[Bot] Registrado: ${transaccion.tipo} $${transaccion.monto} - ${transaccion.categoria}`);
+    // Actualizar estadísticas en segundo plano sin bloquear
+    updateEstadisticas().catch(err => console.error('[Bot] Error actualizando estadísticas:', err.message));
   } catch (err) {
     console.error('[Bot] Error al guardar en Sheets:', err);
     await sock.sendMessage(jid, { text: '❌ Error al guardar el registro. Revisá los logs.' });
@@ -65,7 +78,9 @@ async function handleMessage(sock, message) {
 async function handleResumen(sock, jid) {
   try {
     const { ingresos, gastos, balance } = await getMonthlySummary();
-    const mes = new Date().toLocaleString('es-AR', { month: 'long', year: 'numeric' });
+    const now = new Date();
+    const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+    const mes = `${MESES[now.getMonth()]} ${now.getFullYear()}`;
     const signo = balance >= 0 ? '+' : '';
     const texto =
       `📊 *Resumen de ${mes}*\n\n` +
@@ -93,24 +108,41 @@ async function startBot() {
   const { version } = await fetchLatestBaileysVersion();
   console.log(`[Bot] Usando Baileys v${version.join('.')}`);
 
+  // Cache de mensajes para ayudar a descifrar retries
+  const msgCache = new Map();
+
   function connect() {
     const sock = makeWASocket({
       version,
       auth: state,
       logger: pino({ level: 'silent' }),
       printQRInTerminal: false,
+      syncFullHistory: false,
+      getMessage: async (key) => {
+        const id = `${key.remoteJid}-${key.id}`;
+        return msgCache.get(id) || { conversation: '' };
+      },
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
       if (qr) {
-        console.log('[Bot] Escaneá este QR con WhatsApp:');
-        qrcode.generate(qr, { small: true });
+        currentQR = qr;
+        console.log(`[Bot] QR listo — abrí la URL pública de Railway en el navegador para escanearlo`);
       }
 
       if (connection === 'open') {
+        currentQR = null;
         console.log('[Bot] Conectado a WhatsApp ✅');
+        // Enviar mensaje de bienvenida para establecer la sesión E2E
+        setTimeout(async () => {
+          try {
+            await sock.sendMessage(AUTHORIZED_NUMBER, { text: '🤖 Bot de gastos listo. Mandame "gasto 500 super" o "ingreso 80000 sueldo".' });
+          } catch (e) {
+            console.error('[Bot] Error enviando mensaje inicial:', e.message);
+          }
+        }, 10000);
       }
 
       if (connection === 'close') {
@@ -128,6 +160,10 @@ async function startBot() {
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
       for (const msg of messages) {
+        const jid = msg.key?.remoteJid || '';
+        const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+        if (text) console.log(`[MSG] jid=${jid} texto="${text}"`);
+        if (msg.key?.id && jid) msgCache.set(`${jid}-${msg.key.id}`, msg.message);
         await handleMessage(sock, msg);
       }
     });

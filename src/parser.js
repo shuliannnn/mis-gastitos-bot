@@ -1,44 +1,54 @@
 'use strict';
 
 /**
- * Parsea un mensaje de texto en un objeto de transacción.
- * Formato esperado: "<tipo> <monto> <categoría> [descripción...]"
- * Ejemplo: "gasto 1500 super mercado chino"
+ * Formato: "<tipo> <descripción> <monto> [método de pago]"
+ * El monto (número) actúa como separador entre descripción y método.
  *
- * @param {string} text
- * @returns {{ tipo: string, monto: number, categoria: string, descripcion: string } | null}
+ * Ejemplos:
+ *   "gasto boliche 120000 transferencia"
+ *   "gasto bar lo de tito 42000"
+ *   "gasto cepillo de dientes 2500 efectivo"
+ *   "ingreso sueldo enero 150000"
  */
 function parseMessage(text) {
-  const normalized = text.trim().toLowerCase();
-  const parts = normalized.split(/\s+/);
-
+  const parts = text.trim().split(/\s+/);
   if (parts.length < 3) return null;
 
-  const [tipoRaw, montoRaw, categoriaRaw, ...resto] = parts;
+  const tipo = parts[0].toLowerCase();
+  if (tipo !== 'gasto' && tipo !== 'ingreso') return null;
 
-  if (tipoRaw !== 'gasto' && tipoRaw !== 'ingreso') return null;
+  const rest = parts.slice(1);
+  const montoIdx = rest.findIndex(p => {
+    const n = parseFloat(p.replace(',', '.'));
+    return !isNaN(n) && n > 0;
+  });
 
-  const monto = parseFloat(montoRaw.replace(',', '.'));
-  if (isNaN(monto) || monto <= 0) return null;
+  if (montoIdx < 1) return null; // necesita al menos una palabra antes del monto
 
-  const tipo = tipoRaw.charAt(0).toUpperCase() + tipoRaw.slice(1);
-  const categoria = categoriaRaw.charAt(0).toUpperCase() + categoriaRaw.slice(1);
-  const descripcion = resto.join(' ');
+  const monto = parseFloat(rest[montoIdx].replace(',', '.'));
+  const descripcion = rest.slice(0, montoIdx).join(' ');
+  const metodoPago = rest.slice(montoIdx + 1).join(' ');
 
-  return { tipo, monto, categoria, descripcion };
+  return {
+    tipo: tipo.charAt(0).toUpperCase() + tipo.slice(1),
+    monto,
+    descripcion,
+    categoria: '',
+    metodoPago,
+  };
 }
 
 function helpMessage() {
   return (
-    '❓ No entendí el mensaje. Usá este formato:\n\n' +
-    '*gasto <monto> <categoría> [descripción]*\n' +
-    '*ingreso <monto> <categoría> [descripción]*\n\n' +
+    '❓ Formato:\n\n' +
+    '*gasto <descripción> <monto> [método de pago]*\n' +
+    '*ingreso <descripción> <monto> [método de pago]*\n\n' +
     'Ejemplos:\n' +
-    '• `gasto 1500 super`\n' +
-    '• `gasto 500 farmacia medicamentos`\n' +
-    '• `ingreso 80000 sueldo diciembre`\n' +
-    '• `ingreso 5000 freelance proyecto web`\n\n' +
-    'También podés escribir *resumen* para ver los totales del mes.'
+    '• `gasto boliche 120000 transferencia`\n' +
+    '• `gasto bar lo de tito 42000`\n' +
+    '• `gasto cepillo de dientes 2500 efectivo`\n' +
+    '• `ingreso sueldo enero 150000`\n\n' +
+    'Escribí *resumen* para ver los totales del mes.'
   );
 }
 
