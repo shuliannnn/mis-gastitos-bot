@@ -309,6 +309,22 @@ async function updateEstadisticas() {
   // Todo se lee desde Registros (fuente de verdad) y se agrupa por mes
   const allRows = await readRows(sheets, spreadsheetId, SHEET_REGISTROS);
 
+  // Sincronizar hoja mensual actual desde Registros
+  const curKey = currentMonthKey();
+  const currentMonth = getMonthlySheetName();
+  const curRows = allRows.filter(([fecha]) => monthKey(fecha) === curKey);
+  const monthlySheetId = await ensureSheet(sheets, spreadsheetId, currentMonth);
+  await sheets.spreadsheets.values.clear({ spreadsheetId, range: `'${currentMonth}'!A2:F` });
+  if (curRows.length > 0) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `'${currentMonth}'!A2`,
+      valueInputOption: 'RAW',
+      requestBody: { values: curRows },
+    });
+  }
+  await applyConditionalFormatting(sheets, spreadsheetId, monthlySheetId).catch(() => {});
+
   // Agrupar por mes para la tabla histórica
   const monthMap = new Map(); // "MM/YYYY" → { name, ing, gas }
   for (const [fecha, tipo, , montoStr] of allRows) {
@@ -333,8 +349,6 @@ async function updateEstadisticas() {
     .map(([, { name, ing, gas }]) => [name, ing, gas, ing - gas]);
 
   // Gastos del mes actual por categoría
-  const currentMonth = getMonthlySheetName();
-  const curKey = currentMonthKey();
   const catMap = new Map();
   for (const [fecha, tipo, , montoStr, categoria] of allRows) {
     if (monthKey(fecha) !== curKey || tipo !== 'Gasto' || !montoStr || !categoria) continue;

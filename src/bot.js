@@ -135,6 +135,8 @@ async function startBot() {
       if (connection === 'open') {
         currentQR = null;
         console.log('[Bot] Conectado a WhatsApp ✅');
+        // Sincronizar sheets y formato en background al conectar
+        updateEstadisticas().catch(err => console.error('[Bot] Error sync inicial:', err.message));
         // Enviar mensaje de bienvenida para establecer la sesión E2E
         setTimeout(async () => {
           try {
