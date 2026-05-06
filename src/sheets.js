@@ -259,23 +259,32 @@ async function applyConditionalFormatting(sheets, spreadsheetId, sheetId, cached
     },
   });
 
-  // Formato condicional: color de fila según categoría
-  CATEGORIES.forEach((cat, idx) => {
-    requests.push({
-      addConditionalFormatRule: {
-        rule: {
-          ranges: [{ sheetId, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 6 }],
-          booleanRule: {
-            condition: {
-              type: 'CUSTOM_FORMULA',
-              values: [{ userEnteredValue: `=$E2="${cat}"` }],
-            },
-            format: { backgroundColor: CAT_COLORS[cat] },
-          },
+  // Ingresos → verde menta
+  requests.push({
+    addConditionalFormatRule: {
+      rule: {
+        ranges: [{ sheetId, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 6 }],
+        booleanRule: {
+          condition: { type: 'CUSTOM_FORMULA', values: [{ userEnteredValue: '=$B2="Ingreso"' }] },
+          format: { backgroundColor: { red: 0.78, green: 0.96, blue: 0.85 } },
         },
-        index: idx,
       },
-    });
+      index: 0,
+    },
+  });
+
+  // Gastos → rosa suave
+  requests.push({
+    addConditionalFormatRule: {
+      rule: {
+        ranges: [{ sheetId, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 6 }],
+        booleanRule: {
+          condition: { type: 'CUSTOM_FORMULA', values: [{ userEnteredValue: '=$B2="Gasto"' }] },
+          format: { backgroundColor: { red: 1.0, green: 0.84, blue: 0.84 } },
+        },
+      },
+      index: 1,
+    },
   });
 
   await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
