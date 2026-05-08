@@ -110,6 +110,7 @@ async function startBot() {
 
   // Cache de mensajes para ayudar a descifrar retries
   const msgCache = new Map();
+  let reconnectDelay = 3000;
 
   function connect() {
     const sock = makeWASocket({
@@ -118,6 +119,8 @@ async function startBot() {
       logger: pino({ level: 'silent' }),
       printQRInTerminal: false,
       syncFullHistory: false,
+      keepAliveIntervalMs: 30000,
+      connectTimeoutMs: 60000,
       getMessage: async (key) => {
         const id = `${key.remoteJid}-${key.id}`;
         return msgCache.get(id) || { conversation: '' };
@@ -134,25 +137,18 @@ async function startBot() {
 
       if (connection === 'open') {
         currentQR = null;
+        reconnectDelay = 3000;
         console.log('[Bot] Conectado a WhatsApp ✅');
-        // Sincronizar sheets y formato en background al conectar
         updateEstadisticas().catch(err => console.error('[Bot] Error sync inicial:', err.message));
-        // Enviar mensaje de bienvenida para establecer la sesión E2E
-        setTimeout(async () => {
-          try {
-            await sock.sendMessage(AUTHORIZED_NUMBER, { text: '🤖 Bot de gastos listo. Mandame "gasto 500 super" o "ingreso 80000 sueldo".' });
-          } catch (e) {
-            console.error('[Bot] Error enviando mensaje inicial:', e.message);
-          }
-        }, 10000);
       }
 
       if (connection === 'close') {
-        const shouldReconnect =
-          lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-        console.log('[Bot] Conexión cerrada. Reconectando:', shouldReconnect);
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        console.log(`[Bot] Conexión cerrada (${statusCode}). Reconectando: ${shouldReconnect}`);
         if (shouldReconnect) {
-          setTimeout(connect, 3000);
+          setTimeout(connect, reconnectDelay);
+          reconnectDelay = Math.min(reconnectDelay * 2, 60000); // backoff hasta 60s
         } else {
           console.log('[Bot] Sesión cerrada. Eliminá auth_info_baileys/ y reiniciá.');
         }
